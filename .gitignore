@@ -1,5 +1,4 @@
 build/
-build_dma/
 managed_components/
 sdkconfig.old
 test_reports/

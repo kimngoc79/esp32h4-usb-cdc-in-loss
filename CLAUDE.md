@@ -7,7 +7,7 @@ repository. Read `README.md` first: it explains the problem, the protocol and th
 
 - Do not change `main/`, `sdkconfig*` or `tools/` unless the user asks: this repository is a reproduction case and
   its results must stay comparable.
-- Never commit anything under `test_reports/`, `build/` or `build_dma/`.
+- Never commit anything under `test_reports/` or `build/`.
 - Flashing needs a person at the board (see "Flash"). Ask the user, with clear options, every time the board must
   enter download mode or be reset, then continue.
 - Report results from the files the scripts write; do not guess numbers.
@@ -35,18 +35,17 @@ esp32h4 is a preview target: every `idf.py` command needs `--preview`.
 ## Build
 
 ```
-idf.py --preview build                                                       # slave mode (default) -> build/
-idf.py --preview -B build_dma -DIDF_TARGET=esp32h4 -DSDKCONFIG=build_dma/sdkconfig "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.dma.defaults" build   # DMA -> build_dma/
+idf.py --preview build          # -> build/ (DMA mode, 1 CDC, TX FIFO 8192)
 ```
 
-The build must end with "Project build complete" and no warning. Do not run `set-target` for `build/`: the tracked
-`sdkconfig` is already for esp32h4 and `set-target` would reset it. The DMA build needs `-DIDF_TARGET=esp32h4`
-because its `sdkconfig` is created from the defaults files.
+The build must end with "Project build complete" and no warning. Do not run `set-target`: the tracked `sdkconfig`
+is already for esp32h4 and `set-target` would reset it. If `sdkconfig` is missing, build with
+`idf.py --preview -DIDF_TARGET=esp32h4 build` to recreate it from `sdkconfig.defaults`.
 
 ## Flash
 
 1. Ask the user to put the board in download mode: hold BOOT, press and release RESET, release BOOT.
-2. From the build directory (`build/` or `build_dma/`):
+2. From `build/`:
    `python -m esptool --chip esp32h4 -p <UART port> -b 460800 --before no-reset --after no-reset write-flash @flash_args`
    It must print "Hash of data verified". "No serial data received" means the board is not in download mode: ask
    again.
@@ -55,14 +54,9 @@ because its `sdkconfig` is created from the defaults files.
 
 ## Run the test
 
-Order (see README "Recommended run order"):
-
-1. Flash `build/` (slave mode, example default) and run the test. Expected: it stops at an "IN stalled" before the
-   large sizes.
-2. Flash `build_dma/` (DMA mode) and run the test for the whole size table.
-3. Optional: one more DMA run with a capture (section "Capture").
-
-Ask the user to press RESET before each run.
+1. Ask the user to press RESET, wait until `303A:4001` is enumerated plus about 5 s.
+2. Run the test for the whole size table (command below).
+3. Optional: one more run with a capture (section "Capture").
 
 ```
 python tools/usb_in_test.py --log-port <UART port>
@@ -70,8 +64,8 @@ python tools/usb_in_test.py --log-port <UART port>
 
 - Default: sizes 16..8192 bytes, 100 replies each. Exit code 0 only when every reply is complete and byte-exact.
 - Read the summary at the end of the output and the report `test_reports/usb_in_test_<time>.md`.
-- "test stopped: IN stalled" (slave mode) or "cannot open ... not functioning" (DMA mode, crash on port open) are
-  known results, not script errors. After either one the board needs a RESET before the next run.
+- "cannot open ... not functioning" (the device crashed when the host opened the port) and "test stopped: IN
+  stalled" are known results, not script errors. After either one, ask for a RESET and run again.
 - With `--log-port`, the "Device log" line tells whether the device queued every reply (size and CRC32) and whether
   it panicked or rebooted.
 
@@ -88,6 +82,7 @@ Capture only the board's device address: capturing a whole root hub records othe
 
 ## Report back
 
-Give the user: firmware variant (slave / DMA), the per-size table, whether the test stopped early and why, the device
+Give the user: the per-size table, whether the test stopped early and why (and how many port-open crashes needed a
+RESET before a complete run), the device
 log line, and the capture summary when one was made. Keep the report files local unless the user decides to share
 them.

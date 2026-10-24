@@ -4,7 +4,7 @@
 # ESP32-H4 USB CDC: IN (device to host) data loss
 
 This repository reproduces a USB CDC-ACM problem on the **ESP32-H4**: data sent by the device to the host
-(bulk IN) is lost or the IN pipe stalls, although the device queues every byte correctly. The firmware is the
+(bulk IN) is lost, although the device queues every byte correctly. The firmware is the
 ESP-IDF `peripherals/usb/device/tusb_serial_device` example with the smallest change needed for a repeatable IN test,
 plus a host script that checks every reply byte by byte.
 
@@ -15,13 +15,8 @@ The same application code (fixed-size replies, zero padded) works on an ESP32-S3
 1. **Head of the reply lost (host controller reports babble).** USBPcap shows that the device sends every reply
    complete and byte-exact, but the host controller completes the first bulk IN URB(s) of a reply with
    `USBD_STATUS_BABBLE_DETECTED (0xC0000012)`. usbser.sys drops the data of those URBs, so the application gets only
-   the tail. The loss grows with the reply length: about 10 % at 128 bytes, 100 % at 8192 bytes (DMA mode, table
-   below).
-2. **Slave mode (the example default): the IN pipe stalls.** After a few hundred replies the host gets no more IN
-   data; in an earlier run with a modified firmware the device then panicked with an interrupt watchdog timeout,
-   CPU1 looping in `dwc2_int_handler_wrap` (interrupt storm). 16-byte replies sometimes arrive with 4 extra bytes (the first 32-bit
-   word repeated).
-3. **DMA mode: Load access fault on a SETUP packet.** When the host opens the port, the device sometimes crashes in
+   the tail. The loss grows with the reply length: about 10 % at 128 bytes, 100 % at 8192 bytes (table below).
+2. **Load access fault on a SETUP packet.** When the host opens the port, the device sometimes crashes in
    `handle_epout_dma` (`dcd_dwc2.c:1065`) → `dcd_event_setup_received` (`dcd.h:221`): the setup packet address is taken
    from `DOEPDMA0 - 8`, and `DOEPDMA0` reads near zero. The host then reports "A device attached to the system is not
    functioning".
@@ -33,7 +28,7 @@ The same application code (fixed-size replies, zero padded) works on an ESP32-S3
 | Chip | ESP32-H4, chip revision v0.2 (`ESP-ROM:esp32h4-eco2-20260611`) |
 | ESP-IDF | master `383dda6c` (2026-10-19), reports v6.2.0; esp32h4 needs `idf.py --preview` |
 | Components | `espressif/esp_tinyusb` 2.4.0, `espressif/tinyusb` 0.21.0~2 (see `dependencies.lock`) |
-| USB | internal full-speed PHY, 1 CDC-ACM port, VID:PID `303A:4001` |
+| USB | internal full-speed PHY, 1 CDC-ACM port, VID:PID `303A:4001`, TinyUSB DCD in DMA mode |
 | Host | Windows 11, in-box `usbser.sys`, Python 3.14 + pyserial 3.5 |
 | Capture | USBPcap 1.5.4.0, Wireshark/tshark 4.6.9 |
 
@@ -42,8 +37,7 @@ The same application code (fixed-size replies, zero padded) works on an ESP32-S3
 | File | Change |
 |---|---|
 | `main/tusb_serial_device_main.c` | The echo and its application queue are replaced by the IN test: the RX callback (TinyUSB task) reads an 8-byte request `{magic, size}`, `malloc`s `size` bytes, fills them with fixed data, queues the whole buffer with `tinyusb_cdcacm_write_queue`, starts it with `tinyusb_cdcacm_write_flush(itf, 0)` and frees the buffer. The TinyUSB task is the only CDC writer. Each reply is logged on the UART console with its CRC32. |
-| `sdkconfig.defaults`, `sdkconfig` | `CONFIG_TINYUSB_CDC_TX_BUFSIZE` 2048 → 8192, so an 8 KB reply is queued at once. Everything else is the example's configuration (slave mode, 1 CDC). |
-| `sdkconfig.dma.defaults` | Optional overlay: `CONFIG_TINYUSB_MODE_DMA=y`. |
+| `sdkconfig.defaults`, `sdkconfig` | `CONFIG_TINYUSB_CDC_TX_BUFSIZE` 2048 → 8192, so an 8 KB reply is queued at once. `CONFIG_TINYUSB_MODE_SLAVE` → `CONFIG_TINYUSB_MODE_DMA` (the esp_tinyusb default; the example selects slave mode). Everything else is the example's configuration (1 CDC). |
 | `tools/usb_in_test.py` | Host test (below). |
 | `tools/usb_in_pcap.py` | USBPcap capture analysis (below). |
 
@@ -114,15 +108,13 @@ the report is still written.
 In a shell where ESP-IDF is exported, from the repository root:
 
 ```
-idf.py --preview build                   # slave mode (example default) -> build/
-idf.py --preview -B build_dma -DIDF_TARGET=esp32h4 -DSDKCONFIG=build_dma/sdkconfig "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.dma.defaults" build   # DMA mode -> build_dma/
-idf.py --preview -p <UART port> flash    # slave build; or from build/ or build_dma/:
-                                         # python -m esptool --chip esp32h4 -p <UART port> write-flash @flash_args
+idf.py --preview build                   # -> build/
+idf.py --preview -p <UART port> flash    # or from build/: python -m esptool --chip esp32h4 -p <UART port> write-flash @flash_args
 ```
 
-`sdkconfig` in the repository is already for esp32h4, so `set-target` is not needed for `build/` (running it would
-reset `sdkconfig` to the defaults). The DMA build uses its own `build_dma/sdkconfig`, created from
-`sdkconfig.defaults` + `sdkconfig.dma.defaults`; `-DIDF_TARGET=esp32h4` is required there.
+`sdkconfig` in the repository is already for esp32h4 (DMA mode, 1 CDC, TX FIFO 8192), so `set-target` is not
+needed; running it would reset `sdkconfig` to the defaults. If `sdkconfig` is deleted, build with
+`idf.py --preview -DIDF_TARGET=esp32h4 build` to recreate it from `sdkconfig.defaults`.
 
 On our board the automatic reset into download mode does not work: hold BOOT, press RESET, release BOOT, flash,
 then press RESET to run. Boards with a working auto-reset can use `idf.py flash` directly.
@@ -139,18 +131,13 @@ The CDC port is found by VID:PID `303A:4001` (or `--port`). `--log-port` reads t
 device queued every reply with the expected size and CRC32, and reports any panic or reboot. Output goes to
 `test_reports/`: `usb_in_test_<time>.md` (report), `_pc.log`, `_fail.log` (hex of failed replies), `_uart.log`.
 
-### Recommended run order
+### Running it
 
-1. **Slave mode (`build/`, the example default)** first. Expected: the IN pipe stalls after a few hundred replies
-   (we saw it at 128 bytes); the test stops after 30 s with "IN stalled" and the larger sizes are not reached.
-   Press RESET on the board before the next run.
-2. **DMA mode (`build_dma/`)** next, for the whole size table (16 B to 8 KB). If the device crashes when the host
-   opens the port, the test stops at once with "cannot open ... see the device log for a panic"; press RESET and
-   run again.
-3. Optionally, repeat a DMA run (for example `--sizes 2048 8192 --count 30`) with a USB capture (next section) to
-   see what the host controller received.
-
-Wait about 5 s after a reset (until the `303A:4001` port is enumerated) before starting the test.
+1. Press RESET on the board and wait about 5 s (until the `303A:4001` port is enumerated).
+2. Run the whole size table (16 B to 8 KB). If the device crashes when the host opens the port, the test stops at
+   once with "cannot open ... see the device log for a panic": press RESET and run again.
+3. Optionally, repeat a run (for example `--sizes 2048 8192 --count 30`) with a USB capture (next section) to see
+   what the host controller received.
 
 ### Capture on the host (Windows)
 
@@ -164,18 +151,7 @@ Wait about 5 s after a reset (until the `303A:4001` port is enumerated) before s
 
 ## Results (this repository)
 
-Slave mode (default configuration), `python tools/usb_in_test.py --log-port COM40`:
-
-| Size (B) | Replies OK | Errors |
-|---:|---:|---|
-| 16 | 92/100 | 8 × 4 extra bytes (first 32-bit word repeated) |
-| 32 | 100/100 | |
-| 64 | 100/100 | |
-| 128 | 3/4 | IN stalled at reply #4: no byte for 30 s, test stopped |
-
-Device log: 304/304 replies queued with the expected size and CRC32, no warning.
-
-DMA mode (`build_dma`), same command, run where the device did not crash on the port open:
+`python tools/usb_in_test.py --log-port COM40`, a run where the device did not crash on the port open:
 
 | Size (B) | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 4096 | 8192 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -185,7 +161,7 @@ DMA mode (`build_dma`), same command, run where the device did not crash on the 
 Device log: 1000/1000 replies queued with the expected size and CRC32, no warning, no panic. All errors above 64
 bytes are "head lost": the host gets the last part of the reply only.
 
-USBPcap capture of a DMA run (`--sizes 2048 8192 --count 30`), analysed with `tools/usb_in_pcap.py`:
+USBPcap capture of a run (`--sizes 2048 8192 --count 30`), analysed with `tools/usb_in_pcap.py`:
 
 | Size (B) | Replies captured | Host controller got the whole reply | Replies with all URBs OK | Failed URBs | App-visible OK |
 |---:|---:|---:|---:|---:|---:|
@@ -197,7 +173,7 @@ failed URB, the first URB of the reply failed and the successful URBs carry exac
 saw 5/30 and 0/30 complete replies in that run, which matches "App-visible OK". The device output on the wire is
 correct; the babble condition makes the host drop it.
 
-DMA mode crash on port open (decoded from the UART panic dump):
+Crash on port open (decoded from the UART panic dump):
 
 ```
 Guru Meditation Error: Core 1 panic'ed (Load access fault). MCAUSE 0x5, MTVAL near 0
@@ -213,8 +189,7 @@ Guru Meditation Error: Core 1 panic'ed (Load access fault). MCAUSE 0x5, MTVAL ne
 
 ```
 main/tusb_serial_device_main.c   IN test firmware (example + test request handler)
-sdkconfig.defaults, sdkconfig    example configuration, CDC TX FIFO 8192
-sdkconfig.dma.defaults           DMA mode overlay
+sdkconfig.defaults, sdkconfig    example configuration with DMA mode and CDC TX FIFO 8192
 tools/usb_in_test.py             host IN test
 tools/usb_in_pcap.py             USBPcap capture analysis
 CLAUDE.md                        instructions for running the build and test with an AI coding agent
