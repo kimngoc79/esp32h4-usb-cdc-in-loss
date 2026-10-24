@@ -61,7 +61,7 @@ Reply data (fixed): `04 C8 F4 CF 7D 5E B0 4F B6 FF C5 D6 7D 96 63 57`, then `0xA
 are cut). This is the shape of a "read ID" reply of our product: a short ID followed by constant padding.
 
 Sizes: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 bytes, 100 replies each. A reply ends when the host gets
-`size` bytes or no byte for 1 s; when no byte arrives for 30 s (or the device takes no request) the test stops and
+`size` bytes or no byte for 0.2 s (`--idle-timeout`); when no byte arrives for 30 s (or the device takes no request) the test stops and
 the report is still written.
 
 ## Requirements
@@ -137,7 +137,8 @@ device queued every reply with the expected size and CRC32, and reports any pani
 ### Running it
 
 1. Press RESET on the board, wait until the `303A:4001` port is enumerated, then about 15 s more.
-2. Run the whole size table (16 B to 8 KB).
+2. Run the whole size table (16 B to 8 KB). It takes about 2 minutes: each failed reply costs the 0.2 s idle
+   timeout. If the report shows late bytes, a reply arrived slower than the timeout: raise `--idle-timeout`.
 3. If the device crashes when the host opens the port (finding 2), the test stops at once with "cannot open ...
    see the device log for a panic". This can happen several times in a row. Windows then keeps the port in an error
    state ("A device attached to the system is not functioning") even after the device rebooted: **unplug and
@@ -168,6 +169,10 @@ host unchanged:
 | Run 2: head lost | 0 | 0 | 0 | 10 | 26 | 62 | 86 | 99 | 99 | 100 | 482 |
 
 Device log, both runs: 1000/1000 replies queued with the expected size and CRC32, no warning, no panic.
+
+Runs 1 and 2 used a 1 s idle timeout (about 8 minutes per run, mostly waiting after the failed replies). With the
+current default of 0.2 s a third run took 124 s and gave 521/1000 good replies (96/100/100/91/73/41/17/3/0/0), with
+no late bytes at any size: no complete reply was cut by the shorter timeout.
 
 Errors in detail:
 

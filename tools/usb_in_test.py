@@ -287,7 +287,7 @@ def main():
     parser.add_argument("--sizes", type=int, nargs="+", default=DEFAULT_SIZES,
                         help="reply sizes in bytes, 1..%d" % MAX_SIZE)
     parser.add_argument("--count", type=int, default=100, help="replies per size")
-    parser.add_argument("--idle-timeout", type=float, default=1.0, help="reply ends after this silence (s)")
+    parser.add_argument("--idle-timeout", type=float, default=0.2, help="reply ends after this silence (s)")
     parser.add_argument("--stall-timeout", type=float, default=30.0, help="stop the test after this wait (s)")
     parser.add_argument("--extra-wait", type=float, default=0.02, help="wait for unexpected bytes after a reply (s)")
     parser.add_argument("--report-dir", type=Path, default=ROOT / "test_reports")

@@ -65,7 +65,10 @@ is already for esp32h4 and `set-target` would reset it. If `sdkconfig` is missin
 python tools/usb_in_test.py --log-port <UART port>
 ```
 
-- Default: sizes 16..8192 bytes, 100 replies each. Exit code 0 only when every reply is complete and byte-exact.
+- Default: sizes 16..8192 bytes, 100 replies each, idle timeout 0.2 s; a full run takes about 2 minutes. Exit code 0
+  only when every reply is complete and byte-exact.
+- Late bytes in the report mean a reply arrived slower than the idle timeout: rerun with `--idle-timeout 1` and tell
+  the user.
 - Read the summary at the end of the output and the report `test_reports/usb_in_test_<time>.md`.
 - "cannot open ... not functioning" (the device crashed when the host opened the port) and "test stopped: IN
   stalled" are known results, not script errors. After a crash Windows keeps the port in an error state even when
