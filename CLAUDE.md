@@ -14,23 +14,34 @@ repository. Read `README.md` first: it explains the problem, the protocol and th
 
 ## Environment
 
-- ESP-IDF master with esp32h4 support. Activate it in the shell first (`export.ps1` / `export.sh` of the ESP-IDF
-  install). esp32h4 is a preview target: every `idf.py` command needs `--preview`.
-- Python packages for the host scripts: `pyserial`. The capture analysis also needs Wireshark (`tshark`) and USBPcap
-  (Windows; USBPcap needs a reboot after installation).
-- Ports: the board UART console (USB-UART bridge, used for flashing and the device log) and the H4 USB CDC port
-  (VID:PID `303A:4001`, found automatically by the test). List them with
-  `python -c "import serial.tools.list_ports as l; [print(p.device, p.hwid) for p in l.comports()]"`.
+The full list (hardware, ESP-IDF install, drivers, capture tools) is in `README.md`, section "Requirements". Before
+the first build, check each item below; when one is missing, tell the user what to install or connect (installing
+ESP-IDF, drivers or USBPcap needs the user's consent: USBPcap needs administrator rights and a Windows reboot).
+
+| Check | How | Expected |
+|---|---|---|
+| ESP-IDF exported | `idf.py --version` | prints a version (master with esp32h4 support, measured with `383dda6c`) |
+| esp32h4 tools installed | `idf.py --preview build` | configures without a toolchain error (else run `install.ps1 esp32h4` / `install.sh esp32h4` in ESP-IDF) |
+| Internet on first build | first build | `managed_components/` gets esp_tinyusb 2.4.0 and tinyusb 0.21.0~2 |
+| pyserial | `python -c "import serial; print(serial.VERSION)"` | prints a version (else `pip install pyserial`) |
+| UART console port | port list below | the board's USB-UART bridge (e.g. CP210x `10C4:EA60`) |
+| CDC port under test | port list below, firmware running | `303A:4001` ("USB Serial Device" on Windows, `/dev/ttyACM*` on Linux) |
+| Capture tools (optional) | `C:\Program Files\USBPcap\USBPcapCMD.exe`, `C:\Program Files\Wireshark\tshark.exe` exist, `sc query USBPcap` is RUNNING | needed only for the capture step |
+
+List the serial ports with
+`python -c "import serial.tools.list_ports as l; [print(p.device, p.hwid) for p in l.comports()]"`.
+esp32h4 is a preview target: every `idf.py` command needs `--preview`.
 
 ## Build
 
 ```
 idf.py --preview build                                                       # slave mode (default) -> build/
-idf.py --preview -B build_dma -DSDKCONFIG=build_dma/sdkconfig "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.dma.defaults" build   # DMA -> build_dma/
+idf.py --preview -B build_dma -DIDF_TARGET=esp32h4 -DSDKCONFIG=build_dma/sdkconfig "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.dma.defaults" build   # DMA -> build_dma/
 ```
 
-The build must end with "Project build complete" and no warning. Do not run `set-target` when `sdkconfig` already
-has `CONFIG_IDF_TARGET="esp32h4"`.
+The build must end with "Project build complete" and no warning. Do not run `set-target` for `build/`: the tracked
+`sdkconfig` is already for esp32h4 and `set-target` would reset it. The DMA build needs `-DIDF_TARGET=esp32h4`
+because its `sdkconfig` is created from the defaults files.
 
 ## Flash
 
@@ -43,6 +54,15 @@ has `CONFIG_IDF_TARGET="esp32h4"`.
    opening it.
 
 ## Run the test
+
+Order (see README "Recommended run order"):
+
+1. Flash `build/` (slave mode, example default) and run the test. Expected: it stops at an "IN stalled" before the
+   large sizes.
+2. Flash `build_dma/` (DMA mode) and run the test for the whole size table.
+3. Optional: one more DMA run with a capture (section "Capture").
+
+Ask the user to press RESET before each run.
 
 ```
 python tools/usb_in_test.py --log-port <UART port>

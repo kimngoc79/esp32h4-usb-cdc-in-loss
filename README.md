@@ -16,8 +16,7 @@ The same application code (fixed-size replies, zero padded) works on an ESP32-S3
    complete and byte-exact, but the host controller completes the first bulk IN URB(s) of a reply with
    `USBD_STATUS_BABBLE_DETECTED (0xC0000012)`. usbser.sys drops the data of those URBs, so the application gets only
    the tail. The loss grows with the reply length: about 10 % at 128 bytes, 100 % at 8192 bytes (DMA mode, table
-   below). Replies made of long runs of `0x00` are affected most; in earlier experiments with a modified firmware,
-   pseudo-random replies of the same length were received 100 % intact.
+   below).
 2. **Slave mode (the example default): the IN pipe stalls.** After a few hundred replies the host gets no more IN
    data; in an earlier run with a modified firmware the device then panicked with an interrupt watchdog timeout,
    CPU1 looping in `dwc2_int_handler_wrap` (interrupt storm). 16-byte replies sometimes arrive with 4 extra bytes (the first 32-bit
@@ -63,26 +62,70 @@ sequenceDiagram
     H->>H: compare with the expected bytes, next request
 ```
 
-Reply data (fixed, not random): `04 C8 F4 CF 7D 5E B0 4F B6 FF C5 D6 7D 96 63 57`, then zeros up to `size`
+Reply data (fixed): `04 C8 F4 CF 7D 5E B0 4F B6 FF C5 D6 7D 96 63 57`, then zeros up to `size`
 (shorter replies are cut). This is the shape of a "read ID" reply of our product: a short ID padded with zeros.
 
 Sizes: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 bytes, 100 replies each. A reply ends when the host gets
 `size` bytes or no byte for 1 s; when no byte arrives for 30 s (or the device takes no request) the test stops and
 the report is still written.
 
+## Requirements
+
+### Hardware
+
+- An ESP32-H4 board (we use chip revision v0.2).
+- **Two USB connections to the host PC:**
+  - the H4 **USB OTG** pins (D-/D+) to the PC: this is the CDC port under test (`303A:4001`);
+  - the board **UART console** (USB-UART bridge, e.g. CP210x) to the PC: used to flash and to read the device log.
+  If your board has only one of them wired, wire the other one (see the board schematic for the H4 USB D-/D+ pins).
+- A good USB cable, connected directly to a PC port (note the port: results can change with the port or a hub).
+
+### Software (build and flash)
+
+- **ESP-IDF master** with ESP32-H4 support. The results were measured with commit `383dda6c` (2026-10-19); a newer
+  master should also work. ESP32-H4 is a preview target, so every `idf.py` command needs `--preview`.
+  ```
+  git clone --recursive https://github.com/espressif/esp-idf.git
+  cd esp-idf
+  git checkout 383dda6c && git submodule update --init --recursive    # optional: the exact version we used
+  ./install.ps1 esp32h4            # Windows PowerShell   (Linux/macOS: ./install.sh esp32h4)
+  . ./export.ps1                   # in every new shell  (Linux/macOS: . ./export.sh)
+  ```
+- **Internet access on the first build:** the IDF Component Manager downloads `espressif/esp_tinyusb` 2.4.0 and
+  `espressif/tinyusb` 0.21.0~2 (versions pinned in `dependencies.lock`) into `managed_components/`.
+- A USB-UART driver for the board's bridge if the OS does not have one (e.g. Silicon Labs CP210x).
+
+### Software (test)
+
+- **Python 3.8 or newer** (measured with 3.14) and pyserial: `pip install pyserial`. The ESP-IDF Python environment
+  also works (it has pyserial).
+- The CDC driver of the OS: Windows 10/11 in-box `usbser.sys` (no installation, the port appears as
+  "USB Serial Device (COMx)"); Linux `cdc_acm` (`/dev/ttyACM*`, add the user to the `dialout` group).
+
+### Software (optional USB capture, Windows only)
+
+- **USBPcap** (https://desowin.org/usbpcap/, or `winget install desowin.USBPcap`). It installs a USB filter driver:
+  administrator rights, and **reboot Windows** after the installation.
+- **Wireshark** (https://www.wireshark.org/, or `winget install WiresharkFoundation.Wireshark`) for `tshark.exe`.
+  Npcap is not needed: `tshark` only reads the capture file.
+
 ## Build and flash
 
-In an ESP-IDF (master) environment:
+In a shell where ESP-IDF is exported, from the repository root:
 
 ```
-idf.py --preview set-target esp32h4      # only if sdkconfig is not for esp32h4 already
 idf.py --preview build                   # slave mode (example default) -> build/
-idf.py --preview -B build_dma -DSDKCONFIG=build_dma/sdkconfig "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.dma.defaults" build   # DMA mode -> build_dma/
-idf.py --preview -p <UART port> flash    # or: cd build && python -m esptool --chip esp32h4 -p <UART port> write-flash @flash_args
+idf.py --preview -B build_dma -DIDF_TARGET=esp32h4 -DSDKCONFIG=build_dma/sdkconfig "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.dma.defaults" build   # DMA mode -> build_dma/
+idf.py --preview -p <UART port> flash    # slave build; or from build/ or build_dma/:
+                                         # python -m esptool --chip esp32h4 -p <UART port> write-flash @flash_args
 ```
+
+`sdkconfig` in the repository is already for esp32h4, so `set-target` is not needed for `build/` (running it would
+reset `sdkconfig` to the defaults). The DMA build uses its own `build_dma/sdkconfig`, created from
+`sdkconfig.defaults` + `sdkconfig.dma.defaults`; `-DIDF_TARGET=esp32h4` is required there.
 
 On our board the automatic reset into download mode does not work: hold BOOT, press RESET, release BOOT, flash,
-then press RESET to run. Connect the H4 USB pins (D-/D+) to the host; the UART console stays on the USB-UART bridge.
+then press RESET to run. Boards with a working auto-reset can use `idf.py flash` directly.
 
 ## Run the test
 
@@ -95,6 +138,19 @@ python tools/usb_in_test.py --port COM4 --sizes 2048 --count 1000
 The CDC port is found by VID:PID `303A:4001` (or `--port`). `--log-port` reads the device UART log and checks that the
 device queued every reply with the expected size and CRC32, and reports any panic or reboot. Output goes to
 `test_reports/`: `usb_in_test_<time>.md` (report), `_pc.log`, `_fail.log` (hex of failed replies), `_uart.log`.
+
+### Recommended run order
+
+1. **Slave mode (`build/`, the example default)** first. Expected: the IN pipe stalls after a few hundred replies
+   (we saw it at 128 bytes); the test stops after 30 s with "IN stalled" and the larger sizes are not reached.
+   Press RESET on the board before the next run.
+2. **DMA mode (`build_dma/`)** next, for the whole size table (16 B to 8 KB). If the device crashes when the host
+   opens the port, the test stops at once with "cannot open ... see the device log for a panic"; press RESET and
+   run again.
+3. Optionally, repeat a DMA run (for example `--sizes 2048 8192 --count 30`) with a USB capture (next section) to
+   see what the host controller received.
+
+Wait about 5 s after a reset (until the `303A:4001` port is enumerated) before starting the test.
 
 ### Capture on the host (Windows)
 
