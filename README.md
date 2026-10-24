@@ -19,7 +19,8 @@ The same application code (fixed-size replies, zero padded) works on an ESP32-S3
 2. **Load access fault on a SETUP packet.** When the host opens the port, the device sometimes crashes in
    `handle_epout_dma` (`dcd_dwc2.c:1065`) → `dcd_event_setup_received` (`dcd.h:221`): the setup packet address is taken
    from `DOEPDMA0 - 8`, and `DOEPDMA0` reads near zero. The host then reports "A device attached to the system is not
-   functioning".
+   functioning". It can happen several times in a row (4 consecutive port opens in one session); after it, Windows
+   needs the USB cable replugged.
 
 ## Test setup
 
@@ -36,7 +37,7 @@ The same application code (fixed-size replies, zero padded) works on an ESP32-S3
 
 | File | Change |
 |---|---|
-| `main/tusb_serial_device_main.c` | The echo and its application queue are replaced by the IN test: the RX callback (TinyUSB task) reads an 8-byte request `{magic, size}`, `malloc`s `size` bytes, fills them with fixed data, queues the whole buffer with `tinyusb_cdcacm_write_queue`, starts it with `tinyusb_cdcacm_write_flush(itf, 0)` and frees the buffer. The TinyUSB task is the only CDC writer. Each reply is logged on the UART console with its CRC32. |
+| `main/tusb_serial_device_main.c` | The echo and its application queue are replaced by the IN test: the RX callback (TinyUSB task) reads an 8-byte request `{magic, size}`, `malloc`s `size` bytes, fills them with fixed data (16-byte ID, then `0xAA`), queues the whole buffer with `tinyusb_cdcacm_write_queue`, starts it with `tinyusb_cdcacm_write_flush(itf, 0)` and frees the buffer. The TinyUSB task is the only CDC writer. Each reply is logged on the UART console with its CRC32. |
 | `sdkconfig.defaults`, `sdkconfig` | `CONFIG_TINYUSB_CDC_TX_BUFSIZE` 2048 → 8192, so an 8 KB reply is queued at once. `CONFIG_TINYUSB_MODE_SLAVE` → `CONFIG_TINYUSB_MODE_DMA` (the esp_tinyusb default; the example selects slave mode). Everything else is the example's configuration (1 CDC). |
 | `tools/usb_in_test.py` | Host test (below). |
 | `tools/usb_in_pcap.py` | USBPcap capture analysis (below). |
@@ -51,13 +52,13 @@ sequenceDiagram
     participant H as Host (tools/usb_in_test.py)
     participant D as ESP32-H4 (TinyUSB task)
     H->>D: bulk OUT: request {magic 0x4E495354 "TSIN", size} (2 x u32 LE)
-    D->>D: malloc(size), fill: 16-byte ID, then 0x00
+    D->>D: malloc(size), fill: 16-byte ID, then 0xAA
     D->>H: bulk IN: size bytes (whole reply queued at once)
     H->>H: compare with the expected bytes, next request
 ```
 
-Reply data (fixed): `04 C8 F4 CF 7D 5E B0 4F B6 FF C5 D6 7D 96 63 57`, then zeros up to `size`
-(shorter replies are cut). This is the shape of a "read ID" reply of our product: a short ID padded with zeros.
+Reply data (fixed): `04 C8 F4 CF 7D 5E B0 4F B6 FF C5 D6 7D 96 63 57`, then `0xAA` up to `size` (shorter replies
+are cut). This is the shape of a "read ID" reply of our product: a short ID followed by constant padding.
 
 Sizes: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 bytes, 100 replies each. A reply ends when the host gets
 `size` bytes or no byte for 1 s; when no byte arrives for 30 s (or the device takes no request) the test stops and
@@ -135,10 +136,13 @@ device queued every reply with the expected size and CRC32, and reports any pani
 
 ### Running it
 
-1. Press RESET on the board and wait about 5 s (until the `303A:4001` port is enumerated).
-2. Run the whole size table (16 B to 8 KB). If the device crashes when the host opens the port, the test stops at
-   once with "cannot open ... see the device log for a panic": press RESET and run again.
-3. Optionally, repeat a run (for example `--sizes 2048 8192 --count 30`) with a USB capture (next section) to see
+1. Press RESET on the board, wait until the `303A:4001` port is enumerated, then about 15 s more.
+2. Run the whole size table (16 B to 8 KB).
+3. If the device crashes when the host opens the port (finding 2), the test stops at once with "cannot open ...
+   see the device log for a panic". This can happen several times in a row. Windows then keeps the port in an error
+   state ("A device attached to the system is not functioning") even after the device rebooted: **unplug and
+   replug the H4 USB cable, press RESET**, wait as in step 1 and run again.
+4. Optionally, repeat a run (for example `--sizes 2048 8192 --count 30`) with a USB capture (next section) to see
    what the host controller received.
 
 ### Capture on the host (Windows)
@@ -153,34 +157,41 @@ device queued every reply with the expected size and CRC32, and reports any pani
 
 ## Results (this repository)
 
-`python tools/usb_in_test.py --log-port COM40`, a run where the device did not crash on the port open:
+`python tools/usb_in_test.py --log-port COM40`, two runs of the same firmware (16-byte ID, then `0xAA`), board and
+host unchanged:
 
-| Size (B) | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 4096 | 8192 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Replies OK /100 | 90 | 100 | 100 | 88 | 75 | 65 | 38 | 20 | 4 | 0 |
-| Head lost | 0 | 0 | 0 | 12 | 25 | 35 | 62 | 80 | 96 | 96 |
+| Size (B) | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 4096 | 8192 | Total |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Run 1: replies OK /100 | 94 | 100 | 100 | 88 | 79 | 51 | 24 | 7 | 0 | 0 | 543 |
+| Run 1: head lost | 0 | 0 | 0 | 12 | 21 | 49 | 76 | 93 | 100 | 99 | 450 |
+| Run 2: replies OK /100 | 95 | 99 | 100 | 90 | 74 | 38 | 14 | 1 | 1 | 0 | 512 |
+| Run 2: head lost | 0 | 0 | 0 | 10 | 26 | 62 | 86 | 99 | 99 | 100 | 482 |
 
-Device log: 1000/1000 replies queued with the expected size and CRC32, no warning, no panic.
+Device log, both runs: 1000/1000 replies queued with the expected size and CRC32, no warning, no panic.
 
 Errors in detail:
 
-- 128 to 8192 bytes: 406 replies "head lost": the ID (first packet) and further bytes are missing, the host gets
-  only the end of the reply. Since the data after the ID is zeros, the host test cannot tell which packets were
-  lost; the capture below shows that they are the first URBs of the reply.
-- 8192 bytes: 4 replies kept the ID but missed 768 to 2944 bytes further on.
-- 16 bytes: 10 replies arrived as 20 bytes: the first 32-bit word repeated, then the expected 16 bytes.
+- 128 to 8192 bytes: "head lost": the ID (first packet) and further bytes are missing, the host gets only the end
+  of the reply. Since the data after the ID is constant, the host test cannot tell which packets were lost; the
+  capture below shows that they are the first URBs of the reply.
+- 16 and 32 bytes: replies that arrive 4 bytes too long: the first 32-bit word repeated, then the expected bytes
+  (run 1: 6 at 16 B; run 2: 5 at 16 B, 1 at 32 B).
+- 8192 bytes, run 1: 1 reply kept the ID but missed bytes further on.
+
+The loss is not deterministic: from run to run the count of good replies at one size moves by up to about 13 (512 B:
+51 then 38), the trend stays the same. With `0x00` instead of `0xAA` after the ID (the padding our product uses) the
+result is the same kind: 90/100/100/88/75/65/38/20/4/0 good replies in one run of this firmware.
 
 USBPcap capture of a run (`--sizes 2048 8192 --count 30`), analysed with `tools/usb_in_pcap.py`:
 
 | Size (B) | Replies captured | Host controller got the whole reply | Replies with all URBs OK | Failed URBs | App-visible OK |
 |---:|---:|---:|---:|---:|---:|
-| 2048 | 28 | 28 | 5 | 60 | 5 |
-| 8192 | 30 | 30 | 0 | 280 | 0 |
+| 2048 | 30 | 30 | 1 | 97 | 1 |
+| 8192 | 30 | 30 | 0 | 422 | 0 |
 
-The capture missed the first 2 of the 60 requests (it started late), hence 28 replies at 2048 bytes.
-Bulk IN URB status: 339 × `USBD_STATUS_BABBLE_DETECTED (0xC0000012)`, 60 × success. In 52 of the 53 replies with a
-failed URB, the first URB of the reply failed and the successful URBs carry exactly the expected tail. The host test
-saw 5/30 and 0/30 complete replies in that run, which matches "App-visible OK". The device output on the wire is
+Bulk IN URB status: 518 × `USBD_STATUS_BABBLE_DETECTED (0xC0000012)`, 60 × success. In all 59 replies with a failed
+URB, the first URB of the reply failed and the successful URBs carry exactly the expected tail. The host test saw
+1/30 and 0/30 complete replies in that run, which matches "App-visible OK". The device output on the wire is
 correct; the babble condition makes the host drop it.
 
 Crash on port open (decoded from the UART panic dump):

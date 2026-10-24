@@ -52,12 +52,12 @@ is already for esp32h4 and `set-target` would reset it. If `sdkconfig` is missin
    `python -m esptool --chip esp32h4 -p <UART port> -b 460800 --before no-reset --after no-reset write-flash @flash_args`
    It must print "Hash of data verified". "No serial data received" means the board is not in download mode: ask
    again.
-3. Ask the user to press RESET (without BOOT). Wait until the `303A:4001` port appears, then about 5 s more before
+3. Ask the user to press RESET (without BOOT). Wait until the `303A:4001` port appears, then about 15 s more before
    opening it.
 
 ## Run the test
 
-1. Ask the user to press RESET, wait until `303A:4001` is enumerated plus about 5 s.
+1. Ask the user to press RESET, wait until `303A:4001` is enumerated plus about 15 s.
 2. Run the test for the whole size table (command below).
 3. Optional: one more run with a capture (section "Capture").
 
@@ -68,7 +68,11 @@ python tools/usb_in_test.py --log-port <UART port>
 - Default: sizes 16..8192 bytes, 100 replies each. Exit code 0 only when every reply is complete and byte-exact.
 - Read the summary at the end of the output and the report `test_reports/usb_in_test_<time>.md`.
 - "cannot open ... not functioning" (the device crashed when the host opened the port) and "test stopped: IN
-  stalled" are known results, not script errors. After either one, ask for a RESET and run again.
+  stalled" are known results, not script errors. After a crash Windows keeps the port in an error state even when
+  the device rebooted: ask the user to unplug and replug the H4 USB cable and press RESET, wait as in step 1, run
+  again. The crash can repeat several times in a row; count the attempts for the report.
+- Results vary from run to run (up to about 13 good replies per size); compare trends, not single numbers.
+- Reply data is the 16-byte ID, then `0xAA`.
 - With `--log-port`, the "Device log" line tells whether the device queued every reply (size and CRC32) and whether
   it panicked or rebooted.
 
