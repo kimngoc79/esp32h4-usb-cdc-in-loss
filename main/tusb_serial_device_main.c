@@ -8,7 +8,7 @@
  * USB CDC IN (device to host) test, based on the tusb_serial_device example.
  *
  * The host (tools/usb_in_test.py) sends an 8-byte request {magic, size}. The device allocates a buffer of `size`
- * bytes, fills it with fixed test data (in_test_head, then zeros), queues the whole buffer on the CDC port and
+ * bytes, fills it with fixed test data (in_test_head, then IN_TEST_FILL), queues the whole buffer on the CDC port and
  * frees it. The host checks that every reply arrives complete and byte-exact.
  *
  * The request is handled in the RX callback, i.e. in the TinyUSB task: that task is the only CDC writer.
@@ -34,6 +34,7 @@ static uint8_t rx_buf[CONFIG_TINYUSB_CDC_RX_BUFSIZE + 1];
  */
 #define IN_TEST_MAGIC    0x4E495354u                    // "TSIN"
 #define IN_TEST_MAX_SIZE CONFIG_TINYUSB_CDC_TX_BUFSIZE  // a reply is queued at once, so it must fit the TX FIFO
+#define IN_TEST_FILL     0xAA                           // reply bytes after in_test_head
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;     // IN_TEST_MAGIC
@@ -42,7 +43,7 @@ typedef struct __attribute__((packed)) {
 
 /**
  * @brief Fixed test data: the reply starts with these 16 bytes (an ID, as in a "read ID" reply of our product),
- *        the rest of the reply is zeros
+ *        the rest of the reply is IN_TEST_FILL
  */
 static const uint8_t in_test_head[16] = {
     0x04, 0xC8, 0xF4, 0xCF, 0x7D, 0x5E, 0xB0, 0x4F, 0xB6, 0xFF, 0xC5, 0xD6, 0x7D, 0x96, 0x63, 0x57,
@@ -69,7 +70,7 @@ static void in_test_reply(int itf, const in_test_request_t *req)
         ESP_LOGE(TAG, "no memory for a %u-byte reply", (unsigned)req->size);
         return;
     }
-    memset(reply, 0, req->size);
+    memset(reply, IN_TEST_FILL, req->size);
     memcpy(reply, in_test_head, req->size < sizeof(in_test_head) ? req->size : sizeof(in_test_head));
 
     ESP_LOGI(TAG, "reply #%u size %u crc32 %08X", (unsigned)reply_count++, (unsigned)req->size,

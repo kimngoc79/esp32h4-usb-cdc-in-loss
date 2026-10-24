@@ -1,7 +1,7 @@
 """USB CDC IN (device to host) integrity test for the ESP32-H4 tusb_serial_device firmware of this repository.
 
 For every reply size the host sends an 8-byte request {magic "TSIN", size} (2 x u32 little endian); the device
-answers `size` bytes of fixed test data: the 16-byte ID 04C8F4CF7D5EB04FB6FFC5D67D966357, then zeros (shorter replies
+answers `size` bytes of fixed test data: the 16-byte ID 04C8F4CF7D5EB04FB6FFC5D67D966357, then 0xAA (shorter replies
 are cut). The host checks that every reply arrives complete and byte-exact.
 
 Sizes (default): 16, 32, 64, ... 2048, 4096, 8192 bytes, --count (default 100) replies each.
@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parents[1]
 USB_VID_PID = "303A:4001"  # esp_tinyusb default descriptor with 1 CDC port
 REQUEST_MAGIC = 0x4E495354  # main/tusb_serial_device_main.c IN_TEST_MAGIC ("TSIN")
 REPLY_HEAD = bytes.fromhex("04C8F4CF7D5EB04FB6FFC5D67D966357")  # main/tusb_serial_device_main.c in_test_head
+REPLY_FILL = 0xAA  # main/tusb_serial_device_main.c IN_TEST_FILL
 MAX_SIZE = 8192  # CONFIG_TINYUSB_CDC_TX_BUFSIZE
 PACKET_SIZE = 64  # full speed bulk packet
 DEFAULT_SIZES = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
@@ -47,8 +48,8 @@ PANIC_LOG = re.compile(r"Guru Meditation Error: (.*)")
 
 # --------------------------------------------------------------------------- data
 def expected_reply(size):
-    """Fixed test data of a size-byte reply: the 16-byte ID, then zeros."""
-    return (REPLY_HEAD + bytes(size))[:size]
+    """Fixed test data of a size-byte reply: the 16-byte ID, then REPLY_FILL bytes."""
+    return (REPLY_HEAD + bytes([REPLY_FILL]) * size)[:size]
 
 
 def classify(received, expected):
@@ -227,7 +228,7 @@ def write_report(path, data_port, results, elapsed, aborted, log_result, args):
         "# USB CDC IN test report", "",
         "- Date: %s" % datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "- Data port: %s (%s)" % (data_port, USB_VID_PID),
-        "- Reply data: 16-byte ID %s, then zeros" % REPLY_HEAD.hex().upper(),
+        "- Reply data: 16-byte ID %s, then 0x%02X" % (REPLY_HEAD.hex().upper(), REPLY_FILL),
         "- Sizes: %s bytes, %d replies each" % (args.sizes, args.count),
         "- Timeouts: idle %.1f s after the first byte, stall %.0f s" % (args.idle_timeout, args.stall_timeout),
         "- Duration: %.1f s" % elapsed,
