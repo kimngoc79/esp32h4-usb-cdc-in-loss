@@ -38,6 +38,9 @@ esp32h4 is a preview target: every `idf.py` command needs `--preview`.
 idf.py --preview build          # -> build/ (DMA mode, 1 CDC, TX FIFO 8192)
 ```
 
+On Windows the repository must sit in a short path (e.g. `D:\h4usb`); a deep path breaks the build with
+"soc/soc_caps.h: No such file or directory" (260-character path limit). Ask the user to move or re-clone it.
+
 The build must end with "Project build complete" and no warning. Do not run `set-target`: the tracked `sdkconfig`
 is already for esp32h4 and `set-target` would reset it. If `sdkconfig` is missing, build with
 `idf.py --preview -DIDF_TARGET=esp32h4 build` to recreate it from `sdkconfig.defaults`.

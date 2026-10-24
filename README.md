@@ -105,7 +105,9 @@ the report is still written.
 
 ## Build and flash
 
-In a shell where ESP-IDF is exported, from the repository root:
+In a shell where ESP-IDF is exported, from the repository root. On Windows, clone the repository into a short path
+(for example `D:\h4usb`): a deep path makes the build exceed the 260-character path limit and fails with
+"soc/soc_caps.h: No such file or directory".
 
 ```
 idf.py --preview build                   # -> build/
@@ -158,8 +160,15 @@ device queued every reply with the expected size and CRC32, and reports any pani
 | Replies OK /100 | 90 | 100 | 100 | 88 | 75 | 65 | 38 | 20 | 4 | 0 |
 | Head lost | 0 | 0 | 0 | 12 | 25 | 35 | 62 | 80 | 96 | 96 |
 
-Device log: 1000/1000 replies queued with the expected size and CRC32, no warning, no panic. All errors above 64
-bytes are "head lost": the host gets the last part of the reply only.
+Device log: 1000/1000 replies queued with the expected size and CRC32, no warning, no panic.
+
+Errors in detail:
+
+- 128 to 8192 bytes: 406 replies "head lost": the ID (first packet) and further bytes are missing, the host gets
+  only the end of the reply. Since the data after the ID is zeros, the host test cannot tell which packets were
+  lost; the capture below shows that they are the first URBs of the reply.
+- 8192 bytes: 4 replies kept the ID but missed 768 to 2944 bytes further on.
+- 16 bytes: 10 replies arrived as 20 bytes: the first 32-bit word repeated, then the expected 16 bytes.
 
 USBPcap capture of a run (`--sizes 2048 8192 --count 30`), analysed with `tools/usb_in_pcap.py`:
 
@@ -168,6 +177,7 @@ USBPcap capture of a run (`--sizes 2048 8192 --count 30`), analysed with `tools/
 | 2048 | 28 | 28 | 5 | 60 | 5 |
 | 8192 | 30 | 30 | 0 | 280 | 0 |
 
+The capture missed the first 2 of the 60 requests (it started late), hence 28 replies at 2048 bytes.
 Bulk IN URB status: 339 × `USBD_STATUS_BABBLE_DETECTED (0xC0000012)`, 60 × success. In 52 of the 53 replies with a
 failed URB, the first URB of the reply failed and the successful URBs carry exactly the expected tail. The host test
 saw 5/30 and 0/30 complete replies in that run, which matches "App-visible OK". The device output on the wire is
