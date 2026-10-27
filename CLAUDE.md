@@ -75,9 +75,9 @@ python tools/usb_in_test.py --log-port <UART port>
   the device rebooted: ask the user to unplug and replug the H4 USB cable and press RESET, wait as in step 1, run
   again. The crash can repeat several times in a row; count the attempts for the report.
 - Results vary from run to run (up to about 13 good replies per size); compare trends, not single numbers.
-- Reply data is the 16-byte ID, then `0xAA`.
-- With `--log-port`, the "Device log" line tells whether the device queued every reply (size and CRC32) and whether
-  it panicked or rebooted.
+- The host sends the 16-byte ID, then `0xAA`; the device echoes it.
+- With `--log-port`, the "Device log" line tells whether the device echoed every byte the host sent and whether it
+  panicked or rebooted.
 
 ## Capture (optional, Windows)
 

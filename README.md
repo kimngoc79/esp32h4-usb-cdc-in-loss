@@ -37,7 +37,7 @@ The same application code (fixed-size replies, zero padded) works on an ESP32-S3
 
 | File | Change |
 |---|---|
-| `main/tusb_serial_device_main.c` | The echo and its application queue are replaced by the IN test: the RX callback (TinyUSB task) reads an 8-byte request `{magic, size}`, `malloc`s `size` bytes, fills them with fixed data (16-byte ID, then `0xAA`), queues the whole buffer with `tinyusb_cdcacm_write_queue`, starts it with `tinyusb_cdcacm_write_flush(itf, 0)` and frees the buffer. The TinyUSB task is the only CDC writer. Each reply is logged on the UART console with its CRC32. |
+| `main/tusb_serial_device_main.c` | The application queue and echo task are removed: the RX callback (TinyUSB task) echoes the bytes it reads at once, queues them with `tinyusb_cdcacm_write_queue` and starts the transfer with `tinyusb_cdcacm_write_flush(itf, 0)`. The TinyUSB task is the only CDC writer. Each line state change logs on the UART console the bytes echoed since the previous one. |
 | `sdkconfig.defaults`, `sdkconfig` | `CONFIG_TINYUSB_CDC_TX_BUFSIZE` 2048 → 8192, so an 8 KB reply is queued at once. `CONFIG_TINYUSB_MODE_SLAVE` → `CONFIG_TINYUSB_MODE_DMA` (the esp_tinyusb default; the example selects slave mode). Everything else is the example's configuration (1 CDC). |
 | `tools/usb_in_test.py` | Host test (below). |
 | `tools/usb_in_pcap.py` | USBPcap capture analysis (below). |
@@ -51,18 +51,17 @@ to this firmware.
 sequenceDiagram
     participant H as Host (tools/usb_in_test.py)
     participant D as ESP32-H4 (TinyUSB task)
-    H->>D: bulk OUT: request {magic 0x4E495354 "TSIN", size} (2 x u32 LE)
-    D->>D: malloc(size), fill: 16-byte ID, then 0xAA
-    D->>H: bulk IN: size bytes (whole reply queued at once)
-    H->>H: compare with the expected bytes, next request
+    H->>D: bulk OUT: size bytes of test data
+    D->>H: bulk IN: the same bytes, echoed as each OUT chunk arrives
+    H->>H: compare with the bytes sent, next message
 ```
 
-Reply data (fixed): `04 C8 F4 CF 7D 5E B0 4F B6 FF C5 D6 7D 96 63 57`, then `0xAA` up to `size` (shorter replies
+Test data (fixed): `04 C8 F4 CF 7D 5E B0 4F B6 FF C5 D6 7D 96 63 57`, then `0xAA` up to `size` (shorter messages
 are cut). This is the shape of a "read ID" reply of our product: a short ID followed by constant padding.
 
-Sizes: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 bytes, 100 replies each. A reply ends when the host gets
-`size` bytes or no byte for 0.2 s (`--idle-timeout`); when no byte arrives for 30 s (or the device takes no request) the test stops and
-the report is still written.
+Sizes: 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 bytes, 100 messages each. A reply (the echo) ends when the
+host gets `size` bytes or no byte for 0.2 s (`--idle-timeout`); when no byte arrives for 30 s (or the device takes no
+bytes) the test stops and the report is still written.
 
 ## Requirements
 
@@ -131,7 +130,7 @@ python tools/usb_in_test.py --port COM4 --sizes 2048 --count 1000
 ```
 
 The CDC port is found by VID:PID `303A:4001` (or `--port`). `--log-port` reads the device UART log and checks that the
-device queued every reply with the expected size and CRC32, and reports any panic or reboot. Output goes to
+device echoed every byte the host sent, and reports any panic or reboot. Output goes to
 `test_reports/`: `usb_in_test_<time>.md` (report), `_pc.log`, `_fail.log` (hex of failed replies), `_uart.log`.
 
 ### Running it
@@ -157,6 +156,9 @@ device queued every reply with the expected size and CRC32, and reports any pani
    (failed URBs included), how many URBs failed and with which USBD status, and what the application could see.
 
 ## Results (this repository)
+
+The results below were measured with the earlier request/reply firmware (commit `5db6392`: the host sent an 8-byte
+request `{magic, size}`, the device built and sent the `size`-byte reply). The echo firmware has not been measured yet.
 
 `python tools/usb_in_test.py --log-port COM40`, two runs of the same firmware (16-byte ID, then `0xAA`), board and
 host unchanged:
@@ -214,7 +216,7 @@ Guru Meditation Error: Core 1 panic'ed (Load access fault). MCAUSE 0x5, MTVAL ne
 ## Repository layout
 
 ```
-main/tusb_serial_device_main.c   IN test firmware (example + test request handler)
+main/tusb_serial_device_main.c   echo test firmware (example, echo in the RX callback)
 sdkconfig.defaults, sdkconfig    example configuration with DMA mode and CDC TX FIFO 8192
 tools/usb_in_test.py             host IN test
 tools/usb_in_pcap.py             USBPcap capture analysis
