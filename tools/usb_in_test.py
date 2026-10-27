@@ -1,17 +1,17 @@
-"""USB CDC IN (device to host) integrity test for the ESP32-H4 tusb_serial_device firmware of this repository.
+"""USB CDC echo integrity test for the ESP32-H4 tusb_serial_device firmware of this repository.
 
-For every reply size the host sends an 8-byte request {magic "TSIN", size} (2 x u32 little endian); the device
-answers `size` bytes of fixed test data: the 16-byte ID 04C8F4CF7D5EB04FB6FFC5D67D966357, then 0xAA (shorter replies
-are cut). The host checks that every reply arrives complete and byte-exact.
+For every size the host sends `size` bytes of fixed test data: the 16-byte ID 04C8F4CF7D5EB04FB6FFC5D67D966357, then
+0xAA (shorter messages are cut). The device echoes every byte it receives; the host checks that every echo (reply)
+arrives complete and byte-exact.
 
 Sizes (default): 16, 32, 64, ... 2048, 4096, 8192 bytes, --count (default 100) replies each.
 
 Timeouts: a reply ends when no byte arrives for --idle-timeout s after its first byte (it is checked, the test goes
-on). When no byte at all arrives for --stall-timeout s (default 30) after a request, a reply is still incomplete
-after that long, or the device takes no request bytes, the test stops and the report is written anyway.
+on). When no byte at all arrives for --stall-timeout s (default 30) after a message, a reply is still incomplete
+after that long, or the device takes no bytes, the test stops and the report is written anyway.
 
---log-port (the board UART console, e.g. COM40) also reads the device log: one `reply #n size S crc32 C` line per
-reply the device queued, which tells a request lost on the way to the device from a reply lost on the way back.
+--log-port (the board UART console, e.g. COM40) also reads the device log: every line state change logs the bytes the
+device echoed since the previous one, which tells bytes lost on the way to the device from bytes lost on the way back.
 
 Output in --report-dir (default test_reports/): usb_in_test_<time>.md (report), _pc.log (one line per reply),
 _fail.log (hex of every failed reply), _uart.log (raw device log, with --log-port).
@@ -23,11 +23,9 @@ _fail.log (hex of every failed reply), _uart.log (raw device log, with --log-por
 import argparse
 import datetime
 import re
-import struct
 import sys
 import threading
 import time
-import zlib
 from pathlib import Path
 
 import serial
@@ -35,20 +33,19 @@ from serial.tools.list_ports import comports
 
 ROOT = Path(__file__).resolve().parents[1]
 USB_VID_PID = "303A:4001"  # esp_tinyusb default descriptor with 1 CDC port
-REQUEST_MAGIC = 0x4E495354  # main/tusb_serial_device_main.c IN_TEST_MAGIC ("TSIN")
-REPLY_HEAD = bytes.fromhex("04C8F4CF7D5EB04FB6FFC5D67D966357")  # main/tusb_serial_device_main.c in_test_head
-REPLY_FILL = 0xAA  # main/tusb_serial_device_main.c IN_TEST_FILL
-MAX_SIZE = 8192  # CONFIG_TINYUSB_CDC_TX_BUFSIZE
+REPLY_HEAD = bytes.fromhex("04C8F4CF7D5EB04FB6FFC5D67D966357")  # test data: a 16-byte ID ...
+REPLY_FILL = 0xAA  # ... then this byte
+MAX_SIZE = 8192  # CONFIG_TINYUSB_CDC_TX_BUFSIZE: a whole echo fits the device TX FIFO
 PACKET_SIZE = 64  # full speed bulk packet
 DEFAULT_SIZES = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
-REPLY_LOG = re.compile(r"reply #(\d+) size (\d+) crc32 ([0-9A-F]{8})")
+ECHO_LOG = re.compile(r"echoed (\d+) bytes")
 WARNING_LOG = re.compile(r"^[EW] \(", re.M)
 PANIC_LOG = re.compile(r"Guru Meditation Error: (.*)")
 
 
 # --------------------------------------------------------------------------- data
 def expected_reply(size):
-    """Fixed test data of a size-byte reply: the 16-byte ID, then REPLY_FILL bytes."""
+    """Fixed test data of size bytes, sent and expected back: the 16-byte ID, then REPLY_FILL bytes."""
     return (REPLY_HEAD + bytes([REPLY_FILL]) * size)[:size]
 
 
@@ -141,7 +138,7 @@ def run(args, out, fail_log):
     out("Data port %s, log port %s, sizes %s, %d replies per size, stall timeout %.0f s"
         % (data_port, args.log_port or "-", args.sizes, args.count, args.stall_timeout))
     results = []
-    expected_log = []  # (size, crc32) of every reply the device should log, in order
+    sent = 0  # bytes written to the device
     aborted = None
     start = time.time()
     try:
@@ -164,12 +161,12 @@ def run(args, out, fail_log):
             group["late"] += len(late)
             begin = time.perf_counter()
             try:
-                port.write(struct.pack("<II", REQUEST_MAGIC, size))
+                port.write(expected)
             except serial.SerialTimeoutException:
-                aborted = "device took no request bytes for %.0f s at size %d request #%d" % (
+                aborted = "device took no bytes for %.0f s at size %d message #%d" % (
                     args.stall_timeout, size, iteration + 1)
                 break
-            expected_log.append((size, zlib.crc32(expected) & 0xFFFFFFFF))
+            sent += size
             received, stalled = read_reply(port, size, args.idle_timeout, args.stall_timeout)
             round_trip = time.perf_counter() - begin
             if not stalled and args.extra_wait > 0:
@@ -183,7 +180,7 @@ def run(args, out, fail_log):
             line = ("  size %4d  #%03d  rx %4d/%4d  %8.1f ms  %s %s"
                     % (size, iteration + 1, len(received), size, round_trip * 1000, "PASS" if ok else "FAIL",
                        diagnosis))
-            out(line + ("  (%d late bytes before this request)" % len(late) if late else ""))
+            out(line + ("  (%d late bytes before this message)" % len(late) if late else ""))
             if not ok:
                 fail_log += [line.strip(), "    rx " + (received.hex(" ") or "-"), ""]
             if stalled:
@@ -201,19 +198,14 @@ def run(args, out, fail_log):
         log.stop()
         raw = bytes(log.data)
         text = raw.decode("ascii", errors="replace")
-        replies = [(int(m.group(1)), int(m.group(2)), int(m.group(3), 16)) for m in REPLY_LOG.finditer(text)]
-        numbers = [n for n, _, _ in replies]
         log_result = {
-            "port": args.log_port, "raw": raw, "lines": len(replies), "requests": len(expected_log),
-            "first": numbers[0] if numbers else None, "last": numbers[-1] if numbers else None,
-            "gaps": sum(b - a - 1 for a, b in zip(numbers, numbers[1:]) if b > a + 1),
-            "mismatch": sum(1 for (_, sz, crc), want in zip(replies, expected_log) if (sz, crc) != want),
+            "port": args.log_port, "raw": raw, "sent": sent,
+            "echoed": sum(int(m.group(1)) for m in ECHO_LOG.finditer(text)),
             "warnings": [line for line in text.splitlines() if WARNING_LOG.match(line)],
             "panics": [m.group(1).strip() for m in PANIC_LOG.finditer(text)],
             "reboots": text.count("rst:"),
         }
-        log_result["ok"] = (log_result["lines"] == log_result["requests"] and not log_result["gaps"]
-                            and not log_result["mismatch"] and not log_result["warnings"]
+        log_result["ok"] = (log_result["echoed"] == log_result["sent"] and not log_result["warnings"]
                             and not log_result["panics"] and not log_result["reboots"])
     return data_port, results, elapsed, aborted, log_result
 
@@ -225,10 +217,10 @@ def write_report(path, data_port, results, elapsed, aborted, log_result, args):
     planned = len(args.sizes) * args.count
     verdict = "PASS" if passed == planned and not aborted else "FAIL"
     lines = [
-        "# USB CDC IN test report", "",
+        "# USB CDC echo test report", "",
         "- Date: %s" % datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "- Data port: %s (%s)" % (data_port, USB_VID_PID),
-        "- Reply data: 16-byte ID %s, then 0x%02X" % (REPLY_HEAD.hex().upper(), REPLY_FILL),
+        "- Test data (sent and echoed): 16-byte ID %s, then 0x%02X" % (REPLY_HEAD.hex().upper(), REPLY_FILL),
         "- Sizes: %s bytes, %d replies each" % (args.sizes, args.count),
         "- Timeouts: idle %.1f s after the first byte, stall %.0f s" % (args.idle_timeout, args.stall_timeout),
         "- Duration: %.1f s" % elapsed,
@@ -251,7 +243,7 @@ def write_report(path, data_port, results, elapsed, aborted, log_result, args):
                         sum(not r["pass"] for r in replies) - head, sum(r["received"] for r in replies),
                         g["size"] * len(replies), g["late"], min(times), sum(times) / len(times), max(times)))
     lines += ["", "A reply is OK when exactly the expected bytes arrive, nothing missing and nothing added. "
-              "Late bytes: bytes pending before a request was sent (the tail of an earlier reply).", "",
+              "Late bytes: bytes pending before a message was sent (the tail of an earlier reply).", "",
               "## Failed replies", ""]
     failed = [(g["size"], r) for g in results for r in g["replies"] if not r["pass"]]
     if not failed:
@@ -264,12 +256,9 @@ def write_report(path, data_port, results, elapsed, aborted, log_result, args):
     if log_result:
         r = log_result
         lines += ["", "## Device log (%s)" % r["port"], "",
-                  "One `reply #n size S crc32 C` line per reply the device queued.", "",
+                  "Every line state change logs the bytes the device echoed since the previous one.", "",
                   "| Check | Value |", "|---|---|",
-                  "| Reply lines / requests sent | %d / %d |" % (r["lines"], r["requests"]),
-                  "| First # / last # | %s / %s |" % (r["first"], r["last"]),
-                  "| Missing numbers | %d |" % r["gaps"],
-                  "| Size or CRC32 differs from the expected reply | %d |" % r["mismatch"],
+                  "| Bytes echoed by the device / sent by the host | %d / %d |" % (r["echoed"], r["sent"]),
                   "| E / W lines | %d |" % len(r["warnings"]),
                   "| Panics | %s |" % ("; ".join(r["panics"]) or "0"),
                   "| Reboots (rst: lines) | %d |" % r["reboots"],
@@ -312,10 +301,8 @@ def main():
             out("%-6d %-11s %d" % (g["size"], "%d/%d" % (sum(r["pass"] for r in g["replies"]), len(g["replies"])),
                                    sum(r["diagnosis"].startswith("head lost") for r in g["replies"])))
     if log_result:
-        out("\nDevice log %s: %d/%d reply lines (#%s..#%s), %d missing, %d size/crc mismatch, %d E/W lines, "
-            "%d panics, %d reboots -> %s"
-            % (log_result["port"], log_result["lines"], log_result["requests"], log_result["first"],
-               log_result["last"], log_result["gaps"], log_result["mismatch"], len(log_result["warnings"]),
+        out("\nDevice log %s: %d/%d bytes echoed, %d E/W lines, %d panics, %d reboots -> %s"
+            % (log_result["port"], log_result["echoed"], log_result["sent"], len(log_result["warnings"]),
                len(log_result["panics"]), log_result["reboots"], "PASS" if log_result["ok"] else "FAIL"))
         for panic in log_result["panics"]:
             out("  device panic: " + panic)

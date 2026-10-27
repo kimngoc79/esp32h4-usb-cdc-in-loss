@@ -1,22 +1,22 @@
 """Summarise a USBPcap capture of tools/usb_in_test.py: what the host controller received for every reply.
 
-Needs Wireshark's tshark (reading a .pcap file does not need Npcap). For every request (bulk OUT {magic, size}) the
-bulk IN URB completions that follow are collected, with their USBD status. It answers: did the device send every
-reply byte-exact, and which URBs did the host controller fail (e.g. USBD_STATUS_BABBLE_DETECTED)? usbser.sys drops
+Needs Wireshark's tshark (reading a .pcap file does not need Npcap). A message starts with a bulk OUT URB whose data
+starts with the test data ID; the following OUT URBs (its size) and IN URB completions (its echo, with their USBD
+status) are collected. It answers: did the device echo every message byte-exact, and which URBs did the host
+controller fail (e.g. USBD_STATUS_BABBLE_DETECTED)? usbser.sys drops
 the data of a failed URB, so the application then sees only the bytes of the successful URBs.
 
     python tools/usb_in_pcap.py capture.pcap
     python tools/usb_in_pcap.py capture.pcap --tshark "C:/Program Files/Wireshark/tshark.exe"
 """
 import argparse
-import struct
 import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from usb_in_test import REQUEST_MAGIC, expected_reply  # noqa: E402
+from usb_in_test import REPLY_HEAD, expected_reply  # noqa: E402
 
 FIELDS = ["usb.endpoint_address", "usb.transfer_type", "usb.irp_info.direction", "usb.usbd_status", "usb.capdata"]
 USBD_OK = "0x00000000"
@@ -45,14 +45,16 @@ def main():
             continue
         ep = int(urb["usb.endpoint_address"] or "0", 16)
         data = bytes.fromhex(urb["usb.capdata"].replace(":", "")) if urb["usb.capdata"] else b""
-        if not ep & 0x80 and len(data) == 8 and struct.unpack("<I", data[:4])[0] == REQUEST_MAGIC:
-            current = {"size": struct.unpack("<I", data[4:])[0], "urbs": []}
-            replies.append(current)
+        if not ep & 0x80 and data:  # OUT submission: a new message, or the next part of the current one
+            if REPLY_HEAD.startswith(data[:len(REPLY_HEAD)]) or not current:
+                current = {"size": 0, "urbs": []}
+                replies.append(current)
+            current["size"] += len(data)
         elif ep & 0x80 and urb["usb.irp_info.direction"] == "0x01" and current:  # IN completion
             current["urbs"].append((data, urb["usb.usbd_status"]))
             status_all[urb["usb.usbd_status"]] += 1
 
-    print("capture %s: %d requests" % (args.pcap.name, len(replies)))
+    print("capture %s: %d messages" % (args.pcap.name, len(replies)))
     print("bulk IN URB completions by USBD status: %s" % ", ".join(
         "%s %s=%d" % (s, USBD_NAMES.get(s, "?"), n) for s, n in status_all.most_common()))
     print("\n%-6s %-9s %-14s %-12s %-12s %-14s" % ("Size", "Replies", "Host got all", "All URBs OK", "Failed URBs",
