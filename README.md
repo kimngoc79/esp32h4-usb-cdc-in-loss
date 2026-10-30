@@ -8,8 +8,6 @@ This repository reproduces a USB CDC-ACM problem on the **ESP32-H4**: data sent 
 ESP-IDF `peripherals/usb/device/tusb_serial_device` example with the smallest change needed for a repeatable IN test,
 plus a host script that checks every reply byte by byte.
 
-The same application code (fixed-size replies, zero padded) works on an ESP32-S3 with esp_tinyusb 1.x.
-
 ## Summary of the findings
 
 1. **Head of the reply lost (host controller reports babble).** USBPcap shows that the device sends every reply
@@ -28,8 +26,8 @@ The same application code (fixed-size replies, zero padded) works on an ESP32-S3
 |---|---|
 | Chip | ESP32-H4, chip revision v0.2 (`ESP-ROM:esp32h4-eco2-20260611`) |
 | ESP-IDF | master `383dda6c` (2026-10-19), reports v6.2.0; esp32h4 needs `idf.py --preview` |
-| Components | `espressif/esp_tinyusb` 2.4.0, `espressif/tinyusb` 0.21.0~2 (see `dependencies.lock`) |
-| USB | internal full-speed PHY, 1 CDC-ACM port, VID:PID `303A:4001`, TinyUSB DCD in DMA mode |
+| Components | `espressif/esp_tinyusb` 3.0.0, which bundles TinyUSB 0.21.0~2 (see `dependencies.lock`) |
+| USB | internal full-speed PHY, 1 CDC-ACM port, VID:PID `303A:4001`, TinyUSB DCD in Buffer DMA mode |
 | Host | Windows 11, in-box `usbser.sys`, Python 3.14 + pyserial 3.5 |
 | Capture | USBPcap 1.5.4.0, Wireshark/tshark 4.6.9 |
 
@@ -38,7 +36,7 @@ The same application code (fixed-size replies, zero padded) works on an ESP32-S3
 | File | Change |
 |---|---|
 | `main/tusb_serial_device_main.c` | The application queue and echo task are removed: the RX callback (TinyUSB task) echoes the bytes it reads at once, queues them with `tinyusb_cdcacm_write_queue` and starts the transfer with `tinyusb_cdcacm_write_flush(itf, 0)`. The TinyUSB task is the only CDC writer. Each line state change logs on the UART console the bytes echoed since the previous one. |
-| `sdkconfig.defaults`, `sdkconfig` | `CONFIG_TINYUSB_CDC_TX_BUFSIZE` 2048 → 8192, so an 8 KB reply is queued at once. `CONFIG_TINYUSB_MODE_SLAVE` → `CONFIG_TINYUSB_MODE_DMA` (the esp_tinyusb default; the example selects slave mode). Everything else is the example's configuration (1 CDC). |
+| `sdkconfig.defaults`, `sdkconfig` | `CONFIG_TINYUSB_CDC_TX_BUFSIZE` 2048 → 8192, so an 8 KB reply is queued at once. No DCD mode option: esp_tinyusb 3.x supports only Buffer DMA mode (the example's `CONFIG_TINYUSB_MODE_SLAVE` no longer exists). Everything else is the example's configuration (1 CDC). |
 | `tools/usb_in_test.py` | Host test (below). |
 | `tools/usb_in_pcap.py` | USBPcap capture analysis (below). |
 
@@ -85,8 +83,8 @@ bytes) the test stops and the report is still written.
   ./install.ps1 esp32h4            # Windows PowerShell   (Linux/macOS: ./install.sh esp32h4)
   . ./export.ps1                   # in every new shell  (Linux/macOS: . ./export.sh)
   ```
-- **Internet access on the first build:** the IDF Component Manager downloads `espressif/esp_tinyusb` 2.4.0 and
-  `espressif/tinyusb` 0.21.0~2 (versions pinned in `dependencies.lock`) into `managed_components/`.
+- **Internet access on the first build:** the IDF Component Manager downloads `espressif/esp_tinyusb` 3.0.0
+  (version pinned in `dependencies.lock`; it bundles TinyUSB 0.21.0~2) into `managed_components/`.
 - A USB-UART driver for the board's bridge if the OS does not have one (e.g. Silicon Labs CP210x).
 
 ### Software (test)
@@ -157,8 +155,31 @@ device echoed every byte the host sent, and reports any panic or reboot. Output 
 
 ## Results (this repository)
 
+### Echo firmware, esp_tinyusb 3.0.0
+
+`python tools/usb_in_test.py --log-port COM40`, one run, 0.2 s idle timeout:
+
+| Size (B) | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 | 4096 | 8192 | Total |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Replies OK /100 | 92 | 100 | 100 | 94 | 86 | 63 | 36 | 12 | 1 | 0 | 584 |
+| Head lost | 0 | 0 | 0 | 6 | 11 | 33 | 50 | 46 | 50 | 47 | 243 |
+| Tail lost | 0 | 0 | 0 | 0 | 3 | 4 | 14 | 42 | 49 | 53 | 165 |
+
+Device log: 1636800/1636800 bytes echoed, no warning, no panic. No late bytes at any size.
+
+- 16 bytes: 8 echoes arrive 4 bytes too long (the first 32-bit word repeated), as with the request/reply firmware.
+- From 1024 bytes, "tail lost" (the ID arrives, the end of the message is missing) is about as frequent as "head
+  lost"; with the request/reply firmware almost every failure was "head lost". The firmware and the esp_tinyusb
+  version changed together, so this run does not tell which of the two causes it.
+- Port open: the run started after two failed port opens, each followed by an unplug/replug of the H4 USB cable and
+  RESET. One was the Load access fault of finding 2, the other gave "A device attached to the system is not
+  functioning" with no panic in the device log. Finding 2 is still present with esp_tinyusb 3.0.0.
+
+### Request/reply firmware, esp_tinyusb 2.4.0
+
 The results below were measured with the earlier request/reply firmware (commit `5db6392`: the host sent an 8-byte
-request `{magic, size}`, the device built and sent the `size`-byte reply). The echo firmware has not been measured yet.
+request `{magic, size}`, the device built and sent the `size`-byte reply), built with esp_tinyusb 2.4.0 and the
+`espressif/tinyusb` 0.21.0~2 component.
 
 `python tools/usb_in_test.py --log-port COM40`, two runs of the same firmware (16-byte ID, then `0xAA`), board and
 host unchanged:

@@ -22,7 +22,7 @@ ESP-IDF, drivers or USBPcap needs the user's consent: USBPcap needs administrato
 |---|---|---|
 | ESP-IDF exported | `idf.py --version` | prints a version (master with esp32h4 support, measured with `383dda6c`) |
 | esp32h4 tools installed | `idf.py --preview build` | configures without a toolchain error (else run `install.ps1 esp32h4` / `install.sh esp32h4` in ESP-IDF) |
-| Internet on first build | first build | `managed_components/` gets esp_tinyusb 2.4.0 and tinyusb 0.21.0~2 |
+| Internet on first build | first build | `managed_components/` gets esp_tinyusb 3.0.0 (TinyUSB 0.21.0~2 bundled) |
 | pyserial | `python -c "import serial; print(serial.VERSION)"` | prints a version (else `pip install pyserial`) |
 | UART console port | port list below | the board's USB-UART bridge (e.g. CP210x `10C4:EA60`) |
 | CDC port under test | port list below, firmware running | `303A:4001` ("USB Serial Device" on Windows, `/dev/ttyACM*` on Linux) |
