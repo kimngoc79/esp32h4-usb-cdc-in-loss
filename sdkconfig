@@ -2536,22 +2536,8 @@ CONFIG_WL_SECTOR_SIZE=4096
 #
 # default:
 CONFIG_TINYUSB_DEBUG_LEVEL=1
-
-#
-# TinyUSB DCD
-#
-# CONFIG_TINYUSB_MODE_SLAVE is not set
-CONFIG_TINYUSB_MODE_DMA=y
-# end of TinyUSB DCD
-
-#
-# TinyUSB callbacks
-#
 # default:
-# CONFIG_TINYUSB_SUSPEND_CALLBACK is not set
-# default:
-# CONFIG_TINYUSB_RESUME_CALLBACK is not set
-# end of TinyUSB callbacks
+# CONFIG_TINYUSB_DWC2_PTI_ENABLE is not set
 
 #
 # Power management
@@ -2577,8 +2563,6 @@ CONFIG_TINYUSB_DESC_BCD_DEVICE=0x0100
 CONFIG_TINYUSB_DESC_MANUFACTURER_STRING="Espressif Systems"
 # default:
 CONFIG_TINYUSB_DESC_PRODUCT_STRING="Espressif Device"
-# default:
-CONFIG_TINYUSB_DESC_SERIAL_STRING="123456"
 # default:
 CONFIG_TINYUSB_DESC_CDC_STRING="Espressif CDC Device"
 # end of Descriptor configuration
